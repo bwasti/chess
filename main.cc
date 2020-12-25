@@ -9,13 +9,18 @@
 #include <unordered_map>
 
 #include "movegen.h"
+#include "bitboard.h"
 #include "position.h"
 #include "thread.h"
 #include "uci.h"
 
+#define BETA 1e9
+#define ALPHA (-BETA)
+
 DEFINE_bool(cache, true, "Enable cache for negamax");
 DEFINE_bool(killers, true, "Enable killer opt for negamax");
 DEFINE_int64(cache_size, 1 << 20, "Set cache size for negamax");
+DEFINE_int64(move_limit, ((int64_t)1) << 60, "Move limit");
 DEFINE_bool(idfs, true, "Enable iterative depth first search");
 DEFINE_int32(order_buckets, 5, "Number of buckets for fast ordering");
 DEFINE_bool(print_move, true, "Dump the moves played");
@@ -25,6 +30,7 @@ DEFINE_bool(print_nps, false, "Display the nodes tried per second");
 DEFINE_bool(print_board, false, "Dump the board every move");
 DEFINE_bool(print_fen, false, "Dump the FEN every move");
 DEFINE_bool(print_depth, false, "Dump the depth achieved every move");
+DEFINE_bool(print_eval, false, "Dump the evaluation for every move");
 DEFINE_int32(depth, 20, "Maximum depth to search per move");
 DEFINE_double(max_time, 1.0, "Maximum time to search per move");
 DEFINE_double(scale_time, 1.0, "Scale time provided to white");
@@ -79,12 +85,11 @@ float king_safety(const Position &p, Color c) {
 float pawn_structure(const Position &p, Color c) {
   float sum = 0;
   auto pawns = p.pieces(c, PAWN);
-  for (auto sq = 0; sq < SQUARE_NB; ++sq) {
-    auto s = Square(sq);
-    if (s & pawns) {
-      sum += popcount(p.attackers_to(s) & pawns);
-    }
-  }
+	if (c == WHITE) {
+		sum = popcount(pawn_attacks_bb<WHITE>(pawns));
+	} else {
+		sum = popcount(pawn_attacks_bb<BLACK>(pawns));
+	}
 
   return sum * 0.1;
 }
@@ -169,8 +174,11 @@ inline float move_val(const Position &p, const Move &m,
     break;
   }
   auto t = type_of(p.moved_piece(m));
+  if (p.gives_check(m)) {
+		return 12;
+	}
   if (p.capture(m)) {
-    constexpr int offset = 6;
+    constexpr int offset = 5;
     switch (t) {
     case PAWN:
       return offset + 6;
@@ -274,12 +282,38 @@ inline std::vector<Move> ordered_moves_slow(const Position &p) {
   return out;
 }
 
+inline void set_killer(const Position& p, const Move& m) {
+	if (FLAGS_killers) {
+		bool set = false;
+		const auto idx = p.game_ply() % KILLERS;
+		for (auto i = 0; i < KILLERS_PER_PLY; ++i) {
+			if (killers[idx][i]) {
+				continue;
+			}
+			killers[idx][i] = m;
+			set = true;
+			break;
+		}
+		// no idea why this is better
+		if (!set) {
+			//killers[idx][m % KILLERS_PER_PLY] = m;
+			killers[idx][0] = m;
+		}
+	}
+}
+
 // returns value + nodes scanned
+template <int M>
 std::pair<float, size_t>
 negamax(Position &p, int depth, float alpha, float beta,
         const std::chrono::time_point<std::chrono::steady_clock> &start,
         double max_time) {
+
   std::chrono::duration<double> diff = std::chrono::steady_clock::now() - start;
+  if (diff.count() > max_time) {
+		return std::make_pair(ALPHA, 0);
+	}
+
   auto orig_alpha = alpha;
 
   if (FLAGS_cache) {
@@ -299,45 +333,34 @@ negamax(Position &p, int depth, float alpha, float beta,
     }
   }
 
-  if (diff.count() > max_time || depth == 0) {
-    return std::make_pair(normalized_eval(p), 1);
-  }
-
   auto moves = ordered_moves(p);
-  float val = -1e9;
+  float val = ALPHA;
   size_t nodes = 1;
 
+  // first, check for mates
   if (moves.size() == 0) {
-    if (p.checkers()) {
-      return std::make_pair(-1e9, nodes);
+    if (popcount(p.checkers())) {
+      // checkmate!
+      return std::make_pair(-BETA, nodes);
     }
+    // stalemate :/
     return std::make_pair(0, nodes);
+  }
+
+  if (depth == 0) {
+    return std::make_pair(normalized_eval(p), 1);
   }
 
   for (const auto &m : moves) {
     StateInfo si;
     p.do_move(m, si);
-    const auto r = negamax(p, depth - 1, -beta, -alpha, start, max_time);
+    const auto r = negamax<-M>(p, depth - 1, -beta, -alpha, start, max_time);
     val = std::max(val, -r.first);
     nodes += r.second;
     p.undo_move(m);
     alpha = std::max(alpha, val);
     if (alpha >= beta) {
-      if (FLAGS_killers) {
-        bool set = false;
-				const auto idx = p.game_ply() % KILLERS;
-        for (auto i = 0; i < KILLERS_PER_PLY; ++i) {
-          if (killers[idx][i]) {
-            continue;
-          }
-          killers[idx][i] = m;
-          set = true;
-          break;
-        }
-        if (!set) {
-          killers[idx][0] = m;
-        }
-      }
+      set_killer(p, m);
       break;
     }
   }
@@ -355,22 +378,26 @@ negamax(Position &p, int depth, float alpha, float beta,
     entry.depth = depth;
     set(p, entry);
   }
+
+  if (diff.count() > max_time) {
+		return std::make_pair(ALPHA, 0);
+	}
+
   return std::make_pair(0.9 * val, nodes);
 }
-
-#define ALPHA 1e9
-#define BETA (-ALPHA)
 
 // returns best move and nodes scanned
 std::pair<Move, size_t> best_move(Position &p, double max_time) {
   auto start = std::chrono::steady_clock::now();
   auto moves = ordered_moves(p);
   std::vector<Move> best_calc;
+  float best_eval = 0;
   auto init = FLAGS_idfs ? 0 : FLAGS_depth - 1;
   size_t nodes = 0;
   for (auto d = init; d < FLAGS_depth; ++d) {
-    Move best = MOVE_NONE;
-    float best_v = -1e9;
+		Move best = MOVE_NONE;
+		float best_v = ALPHA;
+		float alpha = ALPHA;
     bool completed = true;
     for (const Move &m : moves) {
       std::chrono::duration<double> diff =
@@ -381,8 +408,13 @@ std::pair<Move, size_t> best_move(Position &p, double max_time) {
       }
       StateInfo si;
       p.do_move(m, si);
-      const auto r = negamax(p, d + 1, -ALPHA, -BETA, start, max_time);
+      const auto r = negamax<1>(p, d, alpha, BETA, start, max_time);
       float val = -r.first;
+      // this negamax did not complete!
+      if (r.second == 0) {
+        val = ALPHA;
+			}
+			alpha = std::max(alpha, val);
       nodes += r.second;
       p.undo_move(m);
       if (val > best_v) {
@@ -392,10 +424,14 @@ std::pair<Move, size_t> best_move(Position &p, double max_time) {
     }
     if (completed || best_calc.size() == 0) {
       best_calc.emplace_back(best);
+      best_eval = best_v;
     }
   }
   if (FLAGS_print_depth) {
     std::cout << "depth:\t" << best_calc.size() << "\n";
+  }
+  if (FLAGS_print_eval) {
+    std::cout << "eval:\t" << best_eval * (p.side_to_move() == BLACK ? -1 : 1) << "\n";
   }
   // clear a new killers spot
   //memset(killers[(p.game_ply() + 1) % KILLERS], 0, KILLERS_PER_PLY);
@@ -412,13 +448,17 @@ int main(int argc, char **argv) {
   Position p;
   StateInfo si;
   p.set(FLAGS_fen, false, &si, Threads.main());
+  auto limit = p.game_ply() + FLAGS_move_limit;
   auto user = 1337;
   if (FLAGS_user == "w" || FLAGS_user == "white") {
     user = WHITE;
   } else if (FLAGS_user == "b" || FLAGS_user == "black") {
     user = BLACK;
   }
-  while (true) {
+	if (FLAGS_print_board) {
+		std::cout << p << "\n";
+	}
+  while (p.game_ply() < limit) {
     auto start = std::chrono::steady_clock::now();
     Move m;
     size_t nodes = 0;
@@ -493,6 +533,7 @@ int main(int argc, char **argv) {
         }
         break;
       }
+      StateInfo si;
       p.do_move(m, si);
       assert(p.pos_is_ok());
     } else {
