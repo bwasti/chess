@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <random>
 #include <unordered_map>
-#include <unordered_set>
 #include <sstream>
 #include <optional>
 #include <gflags/gflags.h>
@@ -15,8 +14,10 @@
 #include "uci.h"
 
 DEFINE_bool(cache, false, "Enable cache for negamax");
-DEFINE_int64(cache_size, 1<<16, "Set cache size for negamax");
+DEFINE_bool(killers, false, "Enable killer opt for negamax");
+DEFINE_int64(cache_size, 1<<20, "Set cache size for negamax");
 DEFINE_bool(idfs, true, "Enable iterative depth first search");
+DEFINE_int32(order_buckets, 3, "Number of buckets for fast ordering");
 DEFINE_bool(print_move, true, "Dump the moves played");
 DEFINE_bool(print_user_move, false, "Echo the moves played by the user");
 DEFINE_bool(print_time, false, "Show the time used per move");
@@ -26,6 +27,7 @@ DEFINE_bool(print_fen, false, "Dump the FEN every move");
 DEFINE_bool(print_depth, false, "Dump the depth achieved every move");
 DEFINE_int32(depth, 10, "Maximum depth to search per move");
 DEFINE_double(max_time, 1.0, "Maximum time to search per move");
+DEFINE_double(scale_time, 1.0, "Scale time provided to white");
 DEFINE_string(user, "", "User color");
 DEFINE_string(fen, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", "Initial FEN");
 
@@ -95,26 +97,27 @@ inline float eval(const Position& p, Color c) {
   sum += 3 * p.count<BISHOP>(c);
   sum += 5 * p.count<ROOK>(c);
   sum += 9 * p.count<QUEEN>(c);
-  sum += 3.5 * p.count<KING>(c);
+  //sum += 3.5 * p.count<KING>(c);
   //sum += center_control(p, c);
   //sum += pawn_structure(p, c);
-  sum += king_safety(p, c);
+  //sum += king_safety(p, c);
   return sum;
 }
 
 
 // returns 0 on equal value
 float normalized_eval(const Position& p) {
-	float o = eval(p, p.side_to_move()) - eval(p, ~p.side_to_move());
-  return o;
+	return eval(p, p.side_to_move());// - eval(p, ~p.side_to_move());
 }
 
+typedef enum { EXACT, UPPERBOUND, LOWERBOUND } entry_flag;
 struct Entry {
-  Entry(int64_t h, int d, float v) : hash(h), depth(d), val(v) {}
   Entry() = default;
   int64_t hash;
+  bool valid = 0;
   int depth;
-  float val;
+  float value;
+  entry_flag flag;
 };
 
 std::vector<Entry>& getCache() {
@@ -122,22 +125,22 @@ std::vector<Entry>& getCache() {
   return cache;
 }
 
-std::optional<float> lookup(Position& p, int depth) {
+Entry lookup(Position& p) {
   const auto& cache = getCache();
   const auto hash = p.key();
   const auto idx = hash % cache.size();
-  const auto& entry = cache[idx];
-  if (entry.hash == hash && depth <= entry.depth) {
-		return entry.val;
-	}
-	return std::nullopt;
+  auto entry = cache[idx];
+  entry.valid = (entry.hash == hash);
+  return entry;
 }
 
-void set(Position& p, int depth, float v) {
+void set(Position& p, Entry& e) {
   auto& cache = getCache();
   const auto hash = p.key();
   const auto idx = hash % cache.size();
-  cache[idx] = Entry(hash, depth, v);
+  e.hash = hash;
+  e.valid = true;
+  cache[idx] = e;
 }
 
 std::string print_square(Square s) {
@@ -146,17 +149,15 @@ std::string print_square(Square s) {
 	return ss.str();
 }
 
-std::string print_move(Move m) {
-  // 0 - 5 TO 6 - 11 FROM 12 - 31 NOT NEEDED
-  auto from = from_sq(m);
-  auto to = to_sq(m);
-  std::string print_square(Square s);
-  std::stringstream ss;
-	ss << print_square(from) << print_square(to);
-	return ss.str();
-}
+// ply -> move
+#define KILLERS 64
+static size_t killer_offset = 0;
+static Move killers[KILLERS];
 
-inline float move_val(const Position& p, Move m) {
+inline float move_val(const Position& p, const Move& m, const Move& killer) {
+  if (killer == m) {
+    return 15;
+	}
   switch (type_of(m)) {
 		case PROMOTION:
 			return 14;
@@ -192,12 +193,61 @@ inline float move_val(const Position& p, Move m) {
 	return 1;
 }
 
-size_t killer_offset = 0;
-#define KILLERS 8
-// offset + idx = ply
-static std::array<std::unordered_set<Move>, KILLERS+1> killers = {};
+#define PRIME 439
+struct Ordered {
+  inline const Move* begin() const { return ordered; }
+  inline const Move* end() const { return last; }
+  size_t size() const { return last - ordered; }
+	Move ordered[MAX_MOVES], *last;
+  void clear() { last = ordered; }
+  void insert(Move m) { *last = m; last++; }
+};
+
+static Ordered ordered;
+static float vals[MAX_MOVES];
 
 inline std::vector<Move> ordered_moves(const Position& p) {
+	MoveList<LEGAL> list(p);
+  auto killer = Move();
+	if (FLAGS_killers) {
+		const auto ply = p.game_ply();
+		if (ply >= (killer_offset + KILLERS)) {
+			killer_offset = ply;
+			std::fill_n(killers, KILLERS, Move());
+		}
+		killer = killers[p.game_ply() - killer_offset];
+	}
+  const auto& move_ptr = list.begin();
+	const auto N = list.size();
+  memset(vals, 0, N);
+  float largest_value = 0;
+  float largest_idx = 0;
+  for (auto i = 0; i < N; ++i) {
+		auto v = move_val(p, move_ptr[i], killer);
+    vals[i] = v;
+    if (v > largest_value) {
+			largest_value = v;
+			largest_idx = i;
+		}
+	}
+  std::vector<Move> out;
+	out.reserve(N);
+
+  // we want to iterate through the list 3 times assigning values
+  const float target = largest_value / FLAGS_order_buckets;
+  for (auto k = FLAGS_order_buckets - 1; k >= 0; --k) {
+    for (auto i = 0; i < N; ++i) {
+			auto idx = (PRIME * i + 1) % N;
+			const float v = vals[idx];
+			if (v > (k * target) && v <= ((k + 1) * target)) {
+				out.emplace_back(move_ptr[idx]);
+			}
+		}
+	}
+  return out;
+}
+
+inline std::vector<Move> ordered_moves_slow(const Position& p) {
 	MoveList<LEGAL> list(p);
 
   std::vector<Move> out;
@@ -205,23 +255,11 @@ inline std::vector<Move> ordered_moves(const Position& p) {
   out.reserve(list.size());
   valued.reserve(list.size());
   for (const auto& m : list) {
-		valued.emplace_back(std::make_pair(m, move_val(p, m)));
+		valued.emplace_back(std::make_pair(m, move_val(p, m, Move())));
 	}
-//  const auto& killer_set = [&]() {
-//		if (p.game_ply() < killer_offset + KILLERS && p.game_ply() >= killer_offset) {
-//      return killers[p.game_ply() - killer_offset];
-//		}
-//		return killers[KILLERS];
-//	}();
-  //std::shuffle(valued.begin(), valued.end(), getRandDevice());
-  std::sort(valued.begin(), valued.end(), 
-		[&](const std::pair<Move, float>& a, const std::pair<Move, float>& b) {
-      //if (killer_set.count(a.first)) {
-			//	return true;
-			//}
-      //if (killer_set.count(b.first)) {
-			//	return false;
-			//}
+  std::shuffle(valued.begin(), valued.end(), getRandDevice());
+  std::stable_sort(valued.begin(), valued.end(), 
+		[](const std::pair<Move, float>& a, const std::pair<Move, float>& b) {
 			return a.second > b.second;
 		});
   for (const auto& m : valued) {
@@ -230,14 +268,29 @@ inline std::vector<Move> ordered_moves(const Position& p) {
   return out;
 }
 
-
 // returns value + nodes scanned
 std::pair<float, size_t> negamax(Position& p, int depth, float alpha, float beta, const std::chrono::time_point<std::chrono::steady_clock>& start, double max_time) {
   std::chrono::duration<double> diff = std::chrono::steady_clock::now() - start;
-  if (diff.count() > max_time) {
-		return std::make_pair(normalized_eval(p), 1);
+  auto orig_alpha = alpha;
+
+	if (FLAGS_cache) {
+		auto entry = lookup(p);
+		if (entry.valid && entry.depth >= depth) {
+			switch (entry.flag) {
+				case EXACT:
+					return std::make_pair(entry.value, 1);
+				case LOWERBOUND:
+					alpha = std::max(alpha, entry.value);
+				case UPPERBOUND:
+					beta = std::min(beta, entry.value);
+			}
+			if (alpha > beta) {
+				return std::make_pair(entry.value, 1);
+			}
+		}
 	}
-  if (depth == 0) {
+
+  if (diff.count() > max_time || depth == 0) {
 		return std::make_pair(normalized_eval(p), 1);
 	}
 
@@ -255,31 +308,33 @@ std::pair<float, size_t> negamax(Position& p, int depth, float alpha, float beta
   for (const auto& m : moves) {
     StateInfo si;
     p.do_move(m, si);
-    std::optional<float> look = (FLAGS_cache && depth > 1) ? lookup(p, depth) : std::nullopt;
-    if (look) {
-			val = std::max(val, -*look);
-		} else {
-      const auto r = negamax(p, depth-1, -beta, -alpha, start, max_time);
-			val = std::max(val, -r.first);
-      nodes += r.second;
-		}
+		const auto r = negamax(p, depth-1, -beta, -alpha, start, max_time);
+		val = std::max(val, -r.first);
+		nodes += r.second;
 	  p.undo_move(m);
     alpha = std::max(alpha, val);
     if (alpha >= beta) {
-      //if (p.game_ply() >= (killer_offset + KILLERS)) {
-      //  std::fill(killers.begin(), killers.end(), std::unordered_set<Move>{});
-      //  killer_offset = p.game_ply();
-			//}
-      //// killer move!
-      //killers[p.game_ply() - killer_offset].insert(m);
+			if (FLAGS_killers) {
+				killers[p.game_ply() - killer_offset] = m;
+			}
 			break;
 		}
 	}
   
 	if (FLAGS_cache) {
-		set(p, depth, val);
+    Entry entry;
+    entry.value = val;
+		if (val < orig_alpha) {
+			entry.flag = UPPERBOUND;
+		} else if (val > beta) {
+			entry.flag = LOWERBOUND;
+		} else {
+			entry.flag = EXACT;
+		}
+    entry.depth = depth;
+    set(p, entry);
 	}
-	return std::make_pair(val, nodes);
+	return std::make_pair(0.9 * val, nodes);
 }
 
 #define ALPHA 1e9
@@ -326,9 +381,6 @@ std::pair<Move, size_t> best_move(Position& p, double max_time) {
 int main(int argc, char** argv) {
 	gflags::ParseCommandLineFlags(&argc, &argv, true);
 	UCI::init(Options);
-  for (auto i = 0; i < KILLERS + 1; ++i) {
-    killers[i] = {};
-	}
   Bitboards::init();
   Position::init();
   Bitbases::init();
@@ -396,14 +448,24 @@ int main(int argc, char** argv) {
 		} else if (p.side_to_move() == WHITE) {
       MoveList<LEGAL> ms(p);
       if (ms.size() == 0) {
+				if (p.checkers()) {
+					std::cout << "black wins\n";
+				} else {
+					std::cout << "stalemate\n";
+				}
 				break;
 			}
-			std::tie(m, nodes) = best_move(p, FLAGS_max_time);
+			std::tie(m, nodes) = best_move(p, FLAGS_scale_time * FLAGS_max_time);
       p.do_move(m, si);
       assert(p.pos_is_ok());
 		} else if (p.side_to_move() == BLACK) {
       MoveList<LEGAL> ms(p);
       if (ms.size() == 0) {
+				if (p.checkers()) {
+					std::cout << "white wins\n";
+				} else {
+					std::cout << "stalemate\n";
+				}
 				break;
 			}
 			std::tie(m, nodes) = best_move(p, FLAGS_max_time);
@@ -418,12 +480,12 @@ int main(int argc, char** argv) {
 			std::cout << "time:\t" << elapsed_seconds.count() << "\n";
 		}
     if (FLAGS_print_nps) {
-			std::cout << "nodes/s:\t" << nodes / elapsed_seconds.count() << "\n";
+			std::cout << "node/s:\t" << nodes / elapsed_seconds.count() << "\n";
 		}
 		if (FLAGS_print_move) {
       // we moved once, so this check is reversed
 			if (p.side_to_move() == user || FLAGS_print_user_move || user == 1337) {
-				std::cout << print_move(m) << "\n";
+				std::cout << UCI::move(m, false) << "\n";
 			}
 		}
     if (FLAGS_print_fen) {
