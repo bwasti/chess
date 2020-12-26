@@ -14,7 +14,7 @@ file(GLOB stockfish_srcs ${CMAKE_SOURCE_DIR}/Stockfish/src/*.cpp)
 file(GLOB syzygy_srcs ${CMAKE_SOURCE_DIR}/Stockfish/src/syzygy/*.cpp)
 file(GLOB_RECURSE nnue_srcs ${CMAKE_SOURCE_DIR}/Stockfish/src/nnue/*.cpp)
 set(CMAKE_CXX_FLAGS "-DNNUE_EMBEDDING_OFF")
-add_library(stockfish SHARED
+add_library(stockfish STATIC 
  ${stockfish_srcs}
  ${syzygy_srcs}
  ${nnue_srcs}
