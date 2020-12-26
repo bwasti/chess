@@ -1,8 +1,10 @@
 # chess
 
 Little chess engine I wrote over the holidays to compete with my brother's implementation.
+It uses the stockfish board representation/movegen but has the entire engine implementation in main.cc (alpha-beta pruned negamax with transitition table + killer heuristic).
 
-Originally tried to make it play like me (thus the name "brmbot"), but I'm not actually very good so it's just a normal bot at this point.
+
+Originally tried to make it play like me (thus the name "brmbot"), but I'm not actually very good so it's just a normal bot now.
 
 ### build
 
@@ -29,6 +31,8 @@ in this case you're playing as black (specified by the `b`). type your moves in 
 ```
 
 #### other options
+
+example here: https://asciinema.org/a/o5fGOGhHC69hiViK6A9ZIlMwQ
 
 ```
 ./brmbot --help
