@@ -8,8 +8,8 @@
 #include <tuple>
 #include <unordered_map>
 
-#include "movegen.h"
 #include "bitboard.h"
+#include "movegen.h"
 #include "position.h"
 #include "thread.h"
 #include "uci.h"
@@ -69,12 +69,9 @@ int val(const Piece &p) {
 // this is expensive
 int center_control(const Position &p, Color c) {
   auto ps = p.pieces(c);
-  int sum = popcount(
-			(p.attackers_to(SQ_D4) |
-			p.attackers_to(SQ_E4) |
-			p.attackers_to(SQ_D5) |
-			p.attackers_to(SQ_E5))
-			& ps);
+  int sum = popcount((p.attackers_to(SQ_D4) | p.attackers_to(SQ_E4) |
+                      p.attackers_to(SQ_D5) | p.attackers_to(SQ_E5)) &
+                     ps);
   return sum;
 }
 
@@ -87,36 +84,36 @@ int king_safety(const Position &p, Color c) {
 int pawn_structure(const Position &p, Color c) {
   int sum = 0;
   auto pawns = p.pieces(c, PAWN);
-	if (c == WHITE) {
-		sum = popcount(pawn_attacks_bb<WHITE>(pawns));
-	} else {
-		sum = popcount(pawn_attacks_bb<BLACK>(pawns));
-	}
+  if (c == WHITE) {
+    sum = popcount(pawn_attacks_bb<WHITE>(pawns));
+  } else {
+    sum = popcount(pawn_attacks_bb<BLACK>(pawns));
+  }
 
   return sum;
 }
 
-inline int activity(const Position& p, Color c) {
-	auto ps = p.pieces(c, KNIGHT, BISHOP);
+inline int activity(const Position &p, Color c) {
+  auto ps = p.pieces(c, KNIGHT, BISHOP);
   if (c == WHITE) {
-		return -popcount(ps & Rank1BB);
-	} else {
-		return -popcount(ps & Rank8BB);
-	}
+    return -popcount(ps & Rank1BB);
+  } else {
+    return -popcount(ps & Rank8BB);
+  }
 }
 
 inline int eval(const Position &p, Color c) {
   int sum = 0;
   sum += 100 * p.count<PAWN>(c);
   if (sum >= 700) {
-		sum += 10 * center_control(p, c);
+    sum += 10 * center_control(p, c);
     sum += 10 * activity(p, c);
     sum += 10 * pawn_structure(p, c);
-	}
+  }
   sum += 300 * popcount(p.pieces(c, KNIGHT, BISHOP));
   sum += 500 * p.count<ROOK>(c);
   sum += 900 * p.count<QUEEN>(c);
-	sum += 10 * king_safety(p, c);
+  sum += 10 * king_safety(p, c);
   return sum;
 }
 
@@ -170,29 +167,29 @@ std::string print_square(Square s) {
 static Move killers[KILLERS][KILLERS_PER_PLY];
 
 inline int move_val(const Position &p, const Move &m,
-                      const Move (&killer)[KILLERS_PER_PLY]) {
+                    const Move (&killer)[KILLERS_PER_PLY]) {
   if (type_of(m) == PROMOTION) {
-		return 2500;
-	}
+    return 2500;
+  }
   if (p.gives_check(m)) {
-		return 1500;
-	}
+    return 1500;
+  }
   if (p.capture(m)) {
-		return 2000;
-	}
+    return 2000;
+  }
   return 1000;
 }
 
 inline int move_val_old(const Position &p, const Move &m,
-                      const Move (&killer)[KILLERS_PER_PLY]) {
+                        const Move (&killer)[KILLERS_PER_PLY]) {
   for (auto i = 0; i < KILLERS_PER_PLY; ++i) {
     if (m == killer[i]) {
       return 2000;
     }
   }
   if (p.gives_check(m)) {
-		return 1800;
-	}
+    return 1800;
+  }
   switch (type_of(m)) {
   case PROMOTION:
     return 1400;
@@ -203,22 +200,22 @@ inline int move_val_old(const Position &p, const Move &m,
     break;
   }
   auto t = type_of(p.moved_piece(m));
-	constexpr int offset = 500;
-	switch (t) {
-	case PAWN:
-		return (p.capture(m) ? offset : 0) + 600;
-	case BISHOP:
-	case KNIGHT:
-		return (p.capture(m) ? offset : 0) + 500;
-	case ROOK:
-		return (p.capture(m) ? offset : 0) + 400;
-	case QUEEN:
-		return (p.capture(m) ? offset : 0) + 300;
-	case KING:
-		return (p.capture(m) ? offset : 0) + 200;
-	default:
-		return (p.capture(m) ? offset : 0) + 100;
-	}
+  constexpr int offset = 500;
+  switch (t) {
+  case PAWN:
+    return (p.capture(m) ? offset : 0) + 600;
+  case BISHOP:
+  case KNIGHT:
+    return (p.capture(m) ? offset : 0) + 500;
+  case ROOK:
+    return (p.capture(m) ? offset : 0) + 400;
+  case QUEEN:
+    return (p.capture(m) ? offset : 0) + 300;
+  case KING:
+    return (p.capture(m) ? offset : 0) + 200;
+  default:
+    return (p.capture(m) ? offset : 0) + 100;
+  }
   return 100;
 }
 
@@ -246,7 +243,7 @@ private:
 
 static int g_vals[MAX_MOVES];
 
-std::vector<Move> ordered_moves(const Position& p) {
+std::vector<Move> ordered_moves(const Position &p) {
   MoveList<LEGAL> list(p);
   static std::vector<Move> checks;
   checks.clear();
@@ -254,15 +251,15 @@ std::vector<Move> ordered_moves(const Position& p) {
   captures.clear();
   static std::vector<Move> rest;
   rest.clear();
-  for (const auto& m : list) {
+  for (const auto &m : list) {
     if (p.gives_check(m)) {
-			checks.emplace_back(m);
-		} else if (p.capture_or_promotion(m)) {
-			captures.emplace_back(m);
-		} else {
-			rest.emplace_back(m);
-		}
-	}
+      checks.emplace_back(m);
+    } else if (p.capture_or_promotion(m)) {
+      captures.emplace_back(m);
+    } else {
+      rest.emplace_back(m);
+    }
+  }
   static std::vector<Move> out;
   out.clear();
   out.reserve(checks.size() + captures.size() + rest.size());
@@ -303,7 +300,7 @@ Ordered ordered_moves_fast(const Position &p) {
       const int v = g_vals[idx];
       if (v > (k * target) && v <= ((k + 1) * target)) {
         auto m = move_ptr[idx];
-				ordered.insert(m);
+        ordered.insert(m);
       }
     }
   }
@@ -333,24 +330,24 @@ inline std::vector<Move> ordered_moves_slow(const Position &p) {
   return out;
 }
 
-inline void set_killer(const Position& p, const Move& m) {
-	if (FLAGS_killers) {
-		bool set = false;
-		const auto idx = p.game_ply() % KILLERS;
-		for (auto i = 0; i < KILLERS_PER_PLY; ++i) {
-			if (killers[idx][i]) {
-				continue;
-			}
-			killers[idx][i] = m;
-			set = true;
-			break;
-		}
-		// no idea why this is better
-		if (!set) {
-			//killers[idx][m % KILLERS_PER_PLY] = m;
-			killers[idx][0] = m;
-		}
-	}
+inline void set_killer(const Position &p, const Move &m) {
+  if (FLAGS_killers) {
+    bool set = false;
+    const auto idx = p.game_ply() % KILLERS;
+    for (auto i = 0; i < KILLERS_PER_PLY; ++i) {
+      if (killers[idx][i]) {
+        continue;
+      }
+      killers[idx][i] = m;
+      set = true;
+      break;
+    }
+    // no idea why this is better
+    if (!set) {
+      // killers[idx][m % KILLERS_PER_PLY] = m;
+      killers[idx][0] = m;
+    }
+  }
 }
 
 // returns value + nodes scanned
@@ -361,8 +358,8 @@ negamax(Position &p, int depth, int alpha, int beta,
 
   std::chrono::duration<double> diff = std::chrono::steady_clock::now() - start;
   if (diff.count() > max_time) {
-		return std::make_pair(ALPHA, 0);
-	}
+    return std::make_pair(ALPHA, 0);
+  }
 
   auto orig_alpha = alpha;
 
@@ -430,27 +427,28 @@ negamax(Position &p, int depth, int alpha, int beta,
   }
 
   if (diff.count() > max_time) {
-		return std::make_pair(ALPHA, 0);
-	}
+    return std::make_pair(ALPHA, 0);
+  }
 
   return std::make_pair((val * 99) / 100, nodes);
 }
 
 // returns best move and nodes scanned
-std::pair<Move, size_t> best_move(Position &p, double max_time, int32_t depth = -1) {
+std::pair<Move, size_t> best_move(Position &p, double max_time,
+                                  int32_t depth = -1) {
   auto start = std::chrono::steady_clock::now();
   auto moves = ordered_moves(p);
   std::vector<Move> best_calc;
   int best_eval = 0;
   if (depth == -1) {
-		depth = FLAGS_depth;
-	}
+    depth = FLAGS_depth;
+  }
   auto init = FLAGS_idfs ? 0 : depth - 1;
   size_t nodes = 0;
   for (auto d = init; d < depth; ++d) {
-		Move best = MOVE_NONE;
-		int best_v = ALPHA;
-		int alpha = ALPHA;
+    Move best = MOVE_NONE;
+    int best_v = ALPHA;
+    int alpha = ALPHA;
     bool completed = true;
     for (const Move &m : moves) {
       std::chrono::duration<double> diff =
@@ -466,11 +464,12 @@ std::pair<Move, size_t> best_move(Position &p, double max_time, int32_t depth = 
       // this negamax did not complete!
       if (r.second == 0) {
         val = ALPHA;
-			}
-			//alpha = std::max(alpha, val);
+      }
+      // alpha = std::max(alpha, val);
       nodes += r.second;
       p.undo_move(m);
-      //std::cerr << "considering " << UCI::move(m, false) << ":" << val << "\n";
+      // std::cerr << "considering " << UCI::move(m, false) << ":" << val <<
+      // "\n";
       if (val > best_v) {
         best = m;
         best_v = val;
@@ -485,10 +484,11 @@ std::pair<Move, size_t> best_move(Position &p, double max_time, int32_t depth = 
     std::cout << "depth:\t" << best_calc.size() << "\n";
   }
   if (FLAGS_print_eval) {
-    std::cout << "eval:\t" << best_eval * (p.side_to_move() == BLACK ? -1 : 1) << "\n";
+    std::cout << "eval:\t" << best_eval * (p.side_to_move() == BLACK ? -1 : 1)
+              << "\n";
   }
   // clear a new killers spot
-  //memset(killers[(p.game_ply() + 1) % KILLERS], 0, KILLERS_PER_PLY);
+  // memset(killers[(p.game_ply() + 1) % KILLERS], 0, KILLERS_PER_PLY);
   return std::make_pair(best_calc.back(), nodes);
 }
 
@@ -501,16 +501,16 @@ void init() {
 }
 
 float manage_time(size_t time_left_, size_t increment) {
-  float time_left = (1.0/1000) * time_left_;
-	float target = 1.0f;
+  float time_left = (1.0 / 1000) * time_left_;
+  float target = 1.0f;
   if (increment) {
-		float target = time_left / 38 + ((float)increment / 1000);
-	}
+    float target = time_left / 38 + ((float)increment / 1000);
+  }
   target = std::max(target, 1.0f);
   if (time_left < target) {
     target = time_left / 2;
-	}
-	return target;
+  }
+  return target;
 }
 
 // for UCI bot play
@@ -520,17 +520,17 @@ void uci_loop() {
   StateInfo si;
 
   enum State {
-		READ,
-		OPTION,
-		OPTION_NAME,
-		OPTION_VALUE,
-		POSITION,
-		MOVE,
+    READ,
+    OPTION,
+    OPTION_NAME,
+    OPTION_VALUE,
+    POSITION,
+    MOVE,
     WTIME,
     BTIME,
     WINC,
     BINC,
-	};
+  };
 
   std::unordered_map<std::string, std::string> options;
   std::string option_name;
@@ -538,19 +538,19 @@ void uci_loop() {
 
   int state = READ;
   auto reset_state = [&]() {
-		if (state == OPTION_VALUE) {
-			options[option_name] = option_value;
+    if (state == OPTION_VALUE) {
+      options[option_name] = option_value;
       option_name = "";
       option_value = "";
       if (FLAGS_debug_uci) {
-				std::cerr << "options:\n";
-				for (const auto& option : options) {
-					std::cerr << "  " << option.first << ": " << option.second << "\n";
-				}
-			}
-		}
+        std::cerr << "options:\n";
+        for (const auto &option : options) {
+          std::cerr << "  " << option.first << ": " << option.second << "\n";
+        }
+      }
+    }
     state = READ;
-	};
+  };
   Color side = COLOR_NB;
   size_t black_time = 0;
   size_t white_time = 0;
@@ -560,101 +560,105 @@ void uci_loop() {
   // setup commands
   while (true) {
     std::string cmd;
-		std::cin >> cmd;
-		if (FLAGS_debug_uci) {
-			if (cmd.size()) {
-				std::cerr << "IN: " << cmd << "\n";
-			}
-		}
+    std::cin >> cmd;
+    if (FLAGS_debug_uci) {
+      if (cmd.size()) {
+        std::cerr << "IN: " << cmd << "\n";
+      }
+    }
 
-		if (cmd == "uci") {
-			reset_state();
-			std::cout << "id author bwasti\n";
-			std::cout << "uciok\n";
-		} else if (cmd == "quit") {
-			break;
-		} else if (cmd == "setoption") {
-			reset_state();
-			state = OPTION;
-			option_name = "";
-			option_value = "";
-		} else if (cmd == "isready") {
-			reset_state();
-			std::cout << "readyok\n";
+    if (cmd == "uci") {
+      reset_state();
+      std::cout << "id author bwasti\n";
+      std::cout << "uciok\n";
+    } else if (cmd == "quit") {
+      break;
+    } else if (cmd == "setoption") {
+      reset_state();
+      state = OPTION;
+      option_name = "";
+      option_value = "";
+    } else if (cmd == "isready") {
+      reset_state();
+      std::cout << "readyok\n";
     } else if (cmd == "position") {
-			reset_state();
+      reset_state();
       state = POSITION;
     } else if (cmd == "moves") {
       reset_state();
       state = MOVE;
-		} else if (cmd == "go") {
-			reset_state();
-      Move m; size_t nodes;
+    } else if (cmd == "go") {
+      reset_state();
+      Move m;
+      size_t nodes;
       if (side != COLOR_NB) {
-				if (side == WHITE) {
-					std::tie(m, nodes) = best_move(p, manage_time(white_time, white_inc));
-				} else {
-					std::tie(m, nodes) = best_move(p, manage_time(black_time, black_inc));
-				}
-			} else {
-				std::tie(m, nodes) = best_move(p, FLAGS_max_time);
-			}
+        if (side == WHITE) {
+          std::tie(m, nodes) = best_move(p, manage_time(white_time, white_inc));
+        } else {
+          std::tie(m, nodes) = best_move(p, manage_time(black_time, black_inc));
+        }
+      } else {
+        std::tie(m, nodes) = best_move(p, FLAGS_max_time);
+      }
       side = p.side_to_move();
       StateInfo si;
       p.do_move(m, si);
       std::cout << "bestmove " << UCI::move(m, false) << "\n";
-		} else if (cmd == "name") {
-			if (state == OPTION) {
-				state = OPTION_NAME;
-			}
-		} else if (cmd == "value") {
-			if (state == OPTION_NAME) {
-				state = OPTION_VALUE;
-			}
+    } else if (cmd == "name") {
+      if (state == OPTION) {
+        state = OPTION_NAME;
+      }
+    } else if (cmd == "value") {
+      if (state == OPTION_NAME) {
+        state = OPTION_VALUE;
+      }
     } else if (cmd == "wtime") {
-			reset_state();
+      reset_state();
       state = WTIME;
     } else if (cmd == "btime") {
-			reset_state();
+      reset_state();
       state = BTIME;
     } else if (cmd == "winc") {
-			reset_state();
+      reset_state();
       state = WINC;
     } else if (cmd == "binc") {
-			reset_state();
+      reset_state();
       state = BINC;
-		} else { // non-keywords
+    } else { // non-keywords
       if (state == OPTION_NAME) {
-        if (option_name.size()) { option_name += " "; }
-				option_name += cmd;
-			} else if (state == OPTION_VALUE) {
-        if (option_value.size()) { option_value += " "; }
-				option_value += cmd;
-			} else if (state == POSITION) {
-				if (cmd == "startpos") {
+        if (option_name.size()) {
+          option_name += " ";
+        }
+        option_name += cmd;
+      } else if (state == OPTION_VALUE) {
+        if (option_value.size()) {
+          option_value += " ";
+        }
+        option_value += cmd;
+      } else if (state == POSITION) {
+        if (cmd == "startpos") {
           reset_state();
-					p.set(START_POS, false, &si, Threads.main());
-				} else {
-					// I assume FEN?
+          p.set(START_POS, false, &si, Threads.main());
+        } else {
+          // I assume FEN?
           std::cerr << "ERROR unknown position " << cmd << "\n";
           return;
-				}
-			} else if (state == MOVE) {
-				auto m = UCI::to_move(p, cmd);
-				StateInfo si;
-				p.do_move(m, si);
-			} else if (state == WTIME) {
-				white_time = std::stoi(cmd);
-			} else if (state == BTIME) {
-				black_time = std::stoi(cmd);
-			} else if (state == WINC) {
-				white_inc = std::stoi(cmd);
-			} else if (state == BINC) {
-				black_inc = std::stoi(cmd);
-			}
-		}
-
-	}
+        }
+      } else if (state == MOVE) {
+        auto m = UCI::to_move(p, cmd);
+        StateInfo si;
+        p.do_move(m, si);
+      } else if (state == WTIME) {
+        white_time = std::stoi(cmd);
+      } else if (state == BTIME) {
+        black_time = std::stoi(cmd);
+      } else if (state == WINC) {
+        white_inc = std::stoi(cmd);
+      } else if (state == BINC) {
+        black_inc = std::stoi(cmd);
+      }
+    }
+  }
 }
 
 int main(int argc, char **argv) {
@@ -663,7 +667,7 @@ int main(int argc, char **argv) {
   if (FLAGS_uci) {
     uci_loop();
     return 0;
-	}
+  }
 
   Position p;
   StateInfo si;
@@ -675,9 +679,9 @@ int main(int argc, char **argv) {
   } else if (FLAGS_user == "b" || FLAGS_user == "black") {
     user = BLACK;
   }
-	if (FLAGS_print_board) {
-		std::cout << p << "\n";
-	}
+  if (FLAGS_print_board) {
+    std::cout << p << "\n";
+  }
   while (p.game_ply() < limit) {
     auto start = std::chrono::steady_clock::now();
     Move m;
