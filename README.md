@@ -9,7 +9,7 @@ Originally tried to make it play like me (thus the name "brmbot"), but I'm not a
 ```
 mkdir build
 cd build
-cmake ..
+cmake .. -DCMAKE_BUILD_TYPE=Release
 make
 ```
 
